@@ -1,0 +1,273 @@
+---
+title: "Resolución ejercicio: Telefonía (Análisis de supervivencia)"
+author: "Felipe Neira Rojas & Angel Llanos Herrera"
+date: "2024-09-27"
+output: pdf_document
+---
+
+
+# Resolución 
+
+
+Importamos los datos de la empresa de telefonía (datos simulados) sobre el tiempo de cada celular que cada celular funciona correctamente despues de ser reparado por cierto servicio técnico. (Y librerias necesarias)
+
+```{r, warning=FALSE, message=FALSE}
+# Importar las librerías necesarias
+library(survival) 
+library(fitdistrplus) # Ajustar distribución
+library(tidyr)
+library(ggplot2)
+library(survminer)
+library(flexsurv) # EMV
+library(readr)
+
+
+datos_celulares <- read_delim("C:/Users/angel/Desktop/TELEFONIA.csv", 
+    delim = ";", escape_double = FALSE, trim_ws = TRUE)
+```
+
+En el caso parametrico del analisis de supervivencia, es necesario saber la distribución de los datos, en este caso, el tiempo de durabilidad del celular despues de ser reparado por cierto servicio técnico.
+
+Suponiendo que X : Tiempo_Durabilidad se acerca a una distribución Weibull, realizamos un Grafico de densidad y prueba de Kolmogorov-Smirlov para comprobar este supuesto.
+
+$H_0$: Los datos de Tiempo_Durabilidad siguen una distribución Weibull.
+
+$H_1$: Los datos de Tiempo_Durabilidad no siguen una distribución Weibull.
+
+```{r, warning=FALSE}
+# Densidad para Tiempo_Durabilidad
+ggplot(datos_celulares, aes(x = Tiempo_Durabilidad)) +
+  geom_histogram(aes(y = ..density..), binwidth = 5, fill = "lightblue", color = "black") +
+  labs(title = "Densidad de Tiempo de Durabilidad de Celulares",
+       x = "Tiempo de Durabilidad (meses)",
+       y = "Densidad")+  theme(plot.title = element_text(hjust = 0.5))
+datos_celulares$Tiempo_Durabilidad[datos_celulares$Tiempo_Durabilidad==0] <- 0.01
+  
+ajuste_weibull <- fitdist(datos_celulares$Tiempo_Durabilidad, "weibull")
+forma <- ajuste_weibull$estimate["shape"]
+escala <- ajuste_weibull$estimate["scale"]
+
+# Prueba de Kolmogorov-Smirlov
+ks.test(datos_celulares$Tiempo_Durabilidad, "pweibull", shape = forma, scale = escala)
+```
+Por lo tanto, con un nivel de significia del 0.05, no se rechaza la hipotesis nula (Los datos de Tiempo_Durabilidad siguen una distribución Weibull), podemos decir que hay suficiente evidencia estadistica que apoya que los datos siguen una distribución Weibull.
+
+
+Siguiendo con el ejercicio. Sabemos que, el periodo de interes del estudio es de 36 meses, por lo que, censuramos los datos con tiempo de durabilidad mayor a 36.
+
+```{r}
+# Censurar los datos que exceden los 36 meses
+datos_celulares$Tiempo_Durabilidad[datos_celulares$Tiempo_Durabilidad > 36] <- 36
+datos_celulares$Evento[datos_celulares$Tiempo_Durabilidad == 36] <- 0  
+# Censurado si no hay evento en 36 meses
+```
+
+Visualizamos los datos censurados
+
+```{r, warning=FALSE}
+# Cargar la librería necesaria
+library(ggplot2)
+
+# Crear el gráfico
+ggplot(datos_celulares, aes(x = Tiempo_Durabilidad, 
+                            y = seq_along(Tiempo_Durabilidad), 
+                            color = Servicio_Tecnico)) +
+  # Líneas desde 0 hasta la duración de cada observación
+  geom_segment(aes(x = 0, xend = Tiempo_Durabilidad, 
+                   yend = seq_along(Tiempo_Durabilidad)), 
+               linewidth = 1, color = "lightgray") +  
+  # Color de las líneas
+  # Puntos para cada observación, con diferentes formas según la censura
+  geom_point(aes(shape = factor(Evento)), size = 3) +  
+  # Diferentes formas según la censura
+  scale_shape_manual(values = c(3, 19), labels = c("Censura", "Evento")) +  
+  # Cuadrado para censura, cruz para evento
+  scale_color_manual(values = c("A" = "red", "B" = "green", "C" = "skyblue"),  
+                     # Asignar colores a cada servicio técnico
+                     labels = c("A", "B", "C")) +
+  labs(
+    title = "Observaciones de Duración con y sin Censura",
+    x = "Duración (meses)",
+    y = "Observación"
+  ) +
+  theme_minimal() +  
+  theme(legend.title = element_blank(),
+        plot.title = element_text(hjust = 0.5)) +  
+  coord_flip() +  
+  geom_vline(xintercept = 36, linetype = "dashed", color = "red", size = 1)
+
+
+```
+
+Podemos observar una gran cantidad de datos censurados, tanto en dispositivos que siguieron funcionando después de los 36 meses, como en datos que se perdió información. Estos datos censurados ocurren en los 3 tipos de servicio técnico.
+
+Creamos la Tasa de fallas Acumuladas para cada servicio técnico.
+
+```{r, warning=FALSE, message=FALSE}
+
+# Ajuste de la funcion de supervivencia con ajuste Weibull (EMV) 
+# Estratificado
+flex <- flexsurvreg(Surv(datos_celulares$Tiempo_Durabilidad, 
+                         datos_celulares$Evento) ~ datos_celulares$Servicio_Tecnico, 
+                    data = datos_celulares, dist = "weibull") # Ajuste weibull
+flexgg <- flex %>% summary(type = "survival") %>% data.frame
+
+tasa_fallos_acumuladas <- data.frame(tiempo = 
+                                       flexgg$datos_celulares.Servicio_Tecnico.A.time,
+                                     Servicio_A = 
+                                       (1- flexgg$datos_celulares.Servicio_Tecnico.A.est),
+                                     Servicio_B =
+                                       (1- flexgg$datos_celulares.Servicio_Tecnico.B.est),
+                                     Servicio_C = 
+                                       (1- flexgg$datos_celulares.Servicio_Tecnico.C.est))
+
+tasa_fallos_long <- tasa_fallos_acumuladas %>% pivot_longer(cols = -tiempo, names_to ="Servicio_Tecnico", values_to = "Tasa_Fallos")
+
+# Graficar
+ggplot(tasa_fallos_long, aes(x = tiempo, y = Tasa_Fallos, 
+                             color = Servicio_Tecnico)) +
+  geom_line(size = 1) +
+  labs(title = "Tasa Acumulada de Fallos por Servicio Técnico",
+       x = "Tiempo",
+       y = "Tasa Acumulada de Fallos") +
+  theme_minimal() +
+  theme(legend.title = element_blank(), plot.title = element_text(hjust = 0.5))
+
+```
+Observaciones:
+- Se obtuvieron la tasa de fallos acumulada para cada servicio técnico, en dónde al llegar a los 36 meses, generando una probabilidad de que al menos el 75% de los dispositivos arreglados en cualquier servicio técnico tenga un fallo.
+
+- Respecto a las curvas de tasa de fallo acumulada, podemos notar que el mejor servicio lo proporciona el servicio técnico C, teniendo menor tasa de fallos entre el mes 3 y 36. Por otro lado, el servicio técnico C y A presentan tasa de fallos más elevadas, siendo este último el que posee la mayor tasa.
+
+
+Graficamos las curvas de durabilidad (supervivencia) estratificadas por Servicios tecnicos.
+```{r, warning=FALSE}
+supervivencia <- data.frame(tiempo = flexgg$datos_celulares.Servicio_Tecnico.A.time,
+                                     Servicio_A =
+                              flexgg$datos_celulares.Servicio_Tecnico.A.est,
+                                     Servicio_B =
+                              flexgg$datos_celulares.Servicio_Tecnico.B.est,
+                                     Servicio_C = 
+                              flexgg$datos_celulares.Servicio_Tecnico.C.est)
+
+
+
+supervivencia_long <- supervivencia %>% pivot_longer(cols = -tiempo, names_to ="Servicio_Tecnico", values_to = "Supervivencia")
+
+# Graficar
+ggplot(supervivencia_long, aes(x = tiempo, y = Supervivencia, 
+                             color = Servicio_Tecnico)) +
+  geom_line(size = 1) +
+  labs(title = "Función de durabilidad (supervivencia) por Servicio Técnico",
+       x = "Tiempo",
+       y = "Probabilidad de Durabilidad") +
+  theme_minimal() +
+  theme(legend.title = element_blank(),  plot.title = element_text(hjust = 0.5))
+
+```
+Obtenida la función de supervivencia para cada servicio técnico podemos comprobar las observaciones pasadas, en dónde podemos visualizar una mayor probabilidad de supervivencia en los dispositivos del servicio técnico B. Por otra parte, los servicios técnicos A y C presentan una menor probabilidad de supervivencia, siendo los dispositivos del servicio técnico A los que tienen una menor probabilidad
+
+
+
+
+Apoyandonos en que Tiempo_Durabilidad sigue una distribución Weibull, calculamos la mediana como:
+```{r, warning=FALSE}
+ajuste_weibull_A <- fitdist(
+  datos_celulares$Tiempo_Durabilidad[datos_celulares$Servicio_Tecnico=="A"], 
+  "weibull")
+forma_A <- ajuste_weibull_A$estimate["shape"]
+escala_A <- ajuste_weibull_A$estimate["scale"]
+
+mediana_A <- qweibull(0.5, shape = forma_A, scale = escala_A)
+
+ajuste_weibull_B <- fitdist(
+  datos_celulares$Tiempo_Durabilidad[datos_celulares$Servicio_Tecnico=="B"], 
+  "weibull")
+forma_B <- ajuste_weibull_B$estimate["shape"]
+escala_B <- ajuste_weibull_B$estimate["scale"]
+mediana_B <- qweibull(0.5, shape = forma_B, scale = escala_B)
+
+
+ajuste_weibull_C <- fitdist(
+  datos_celulares$Tiempo_Durabilidad[datos_celulares$Servicio_Tecnico=="C"], 
+  "weibull")
+forma_C <- ajuste_weibull_C$estimate["shape"]
+escala_C <- ajuste_weibull_C$estimate["scale"]
+mediana_C <- qweibull(0.5, shape = forma_C, scale = escala_C)
+
+print("------------Medianas-----------")
+paste("A = ", round(mediana_A,2), "B = ", round(mediana_B,2), "C = ", round(mediana_C,2))
+```
+
+
+Observaciones:
+
+- Servicio Técnico A:
+
+Los celulares enviados al servicio tecnico A presentaron la menor mediana de durabilidad, indicando que tienden a fallar más rapidamente, ya que al menos el 50% de los celulares reparados por este servicio tecnico funcionan bien durante 4 meses o más.
+
+- Servicio Técnico B:
+
+La mediana de durabilidad de un celular enviado al servicio tecnico B es la más alta. Esto nos dice que, en promedio, los celulares reparados por este servicio tienen una mejor durabilidad. Al menos el 50% de los celulares funcionaron bien durante 7 meses o más.
+
+
+Esto no solo sugiere que tardan más en fallar, sino que existe una mayor consistencia en la calidad de las reparaciones realizadas por el servicio tecnico B.
+
+
+- Servicio Técnico C:
+
+La mediana de durabilidad de los dispositivos reparados en el servicio técnico C es de 6.1, representando que al menos el 50% de los celulares funcionaron 6 o más meses
+
+Es importante considerar que esta mediana fue calculada considerando los datos censurados, donde se asumio que la durabilidad del celular fue al menos igual al tiempo de seguimiento. Por lo tanto, los meses representan el limite inferior para la durabilidad real de estos dispositivos. 
+
+Ahora, determinamos si hay diferencias significativas en la durabilidades entre servicios tecnicos. Para esto aplicamos una Prueba de Log-Rank, donde las hipotesis son:
+
+$H_0$: No existe diferencia en la función de supervivencia entre los servicios tecnicos.
+
+$H_1$: Existe al menos una diferencia en la función de supervivencia entre los servicios tecnicos.
+```{r}
+library(survival)
+
+# Crear objeto de supervivencia
+surv_obj <- Surv(datos_celulares$Tiempo_Durabilidad, datos_celulares$Evento)
+
+# Prueba de log-rank
+log_rank_test <- survdiff(surv_obj ~ Servicio_Tecnico, data = datos_celulares)
+log_rank_test
+
+```
+Con un nivel de significancia del 0.05 podemos rechazar la hipotesis nula, por lo que, hay suficiente evidencia estadistica para concluir que existe al menos una diferencia significativa en las durabilidades de los celulares entre los servicios tecnicos. 
+
+
+Ahora bien, si comparamos con base en los resultados de la mediana más alta (Servicio tecnico B) con otro servicio tecnico.
+
+
+```{r}
+log_rank_result <- survdiff(surv_obj ~ Servicio_Tecnico, 
+                            data = datos_celulares, 
+                            subset = Servicio_Tecnico %in% c("B", "A"))
+
+log_rank_result
+
+```
+Podemos ver que con nivel de significancia del 0.05 se rechaza la hipotesis nula, concluyendo que la diferencia significativa de durabilidades de los celulares se encuentra entre el servicio tecnico B y A.
+
+Por ultimo, con base en el grafico de supervivencia era evidente esta diferencia, y por lo mismo, es valido concluir y comprobar la inexistencia de diferencias significativas entre la durabilidad del servicio tecnico A y C (p > 0.2)
+
+```{r}
+log_rank_result <- survdiff(surv_obj ~ Servicio_Tecnico, 
+                            data = datos_celulares, 
+                            subset = Servicio_Tecnico %in% c("A", "C"))
+
+log_rank_result
+
+```
+
+
+Conclusiones: 
+
+El analisis de supervivencia realizado en la durabilidad de los celulares reparados por 3 diferentes servicios reflejó diferencias significativas en la durabilidad de los dispotivos (p = 0.05). Donde el servicio tecnico B presentó la mayor mediana de durabilidad despues de reparación (7 meses y 10 días), lo que indica que, en promedio, los celulares reparados por este servicio tuvieron una mayor vida util (ver grafico de supervivencia). 
+
+Considerando los datos censurados incluidos en el estudio, podemos concluir que, en promedio, los dispositivos reparados en el servicio tecnico B tuvieron una vida util superior a las demas. Sin embargo, es importante tener en cuenta que la presencia de datos censurados implica que el tiempo de vida real de algunos dispositivos podría haber sido incluso mayor al observado.
+
+
